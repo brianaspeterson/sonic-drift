@@ -41,9 +41,69 @@ function matchesDateFilter(track, filterYear, filterMonth) {
   
   if (filterYear && year !== filterYear) return false;
   if (filterMonth && month && month !== filterMonth) return false;
-  if (filterMonth && !month) return true; // Year-only precision, include it
+  if (filterMonth && !month) return true;
   
   return true;
+}
+
+/**
+ * Generate adjacent/related genres from user's genres
+ * This helps find artists outside the user's immediate bubble
+ */
+function generateAdjacentGenres(userGenres, rand) {
+  const genreAdjacencies = {
+    'hip hop': ['boom bap', 'conscious hip hop', 'jazz rap', 'lo-fi hip hop', 'underground hip hop', 'abstract hip hop', 'experimental hip hop'],
+    'rap': ['southern hip hop', 'east coast hip hop', 'west coast rap', 'uk hip hop', 'australian hip hop', 'french hip hop'],
+    'pop': ['art pop', 'chamber pop', 'dream pop', 'synthpop', 'indie pop', 'baroque pop', 'electropop'],
+    'rock': ['post-rock', 'math rock', 'shoegaze', 'psychedelic rock', 'krautrock', 'space rock', 'stoner rock'],
+    'indie': ['bedroom pop', 'hypnagogic pop', 'chillwave', 'slowcore', 'sadcore', 'indie rock', 'lo-fi indie'],
+    'electronic': ['idm', 'ambient', 'downtempo', 'trip hop', 'glitch', 'microhouse', 'minimal techno'],
+    'r&b': ['neo soul', 'quiet storm', 'alternative r&b', 'progressive soul', 'uk soul', 'pj soul'],
+    'soul': ['northern soul', 'psychedelic soul', 'deep funk', 'modern funk', 'blue-eyed soul'],
+    'jazz': ['nu jazz', 'spiritual jazz', 'jazz fusion', 'acid jazz', 'cool jazz', 'modal jazz'],
+    'folk': ['freak folk', 'psych folk', 'chamber folk', 'indie folk', 'anti-folk', 'neofolk'],
+    'metal': ['post-metal', 'sludge metal', 'doom metal', 'stoner rock', 'progressive metal', 'atmospheric black metal'],
+    'punk': ['post-punk', 'art punk', 'noise rock', 'no wave', 'post-hardcore', 'hardcore punk'],
+    'country': ['alt-country', 'americana', 'outlaw country', 'country rock', 'cosmic americana'],
+    'funk': ['p-funk', 'boogie', 'electro funk', 'go-go', 'modern funk', 'synth funk'],
+    'alternative': ['art rock', 'experimental rock', 'noise pop', 'industrial', 'post-punk revival'],
+    'dance': ['uk garage', 'breakbeat', 'house', 'deep house', 'disco house'],
+    'experimental': ['avant-garde', 'noise', 'drone', 'musique concrete', 'field recordings'],
+    'latin': ['tropicalia', 'cumbia', 'bossa nova', 'latin jazz', 'psychedelic cumbia'],
+    'reggae': ['dub', 'roots reggae', 'lovers rock', 'dancehall'],
+  };
+
+  // Additional discovery genres for variety
+  const discoveryGenres = [
+    'neo-psychedelia', 'post-punk revival', 'new weird america', 'hyperpop',
+    'afrobeat', 'ethio-jazz', 'tuareg guitar', 'desert blues', 
+    'city pop', 'shibuya-kei', 'j-rock', 'k-indie',
+    'brazilian psychedelic', 'cumbia digital', 'latin alternative',
+    'afro house', 'amapiano', 'gqom',
+    'uk garage', 'breakbeat', 'jungle',
+    'vaporwave', 'chillwave', 'lo-fi beats',
+    'post-rock', 'math rock', 'midwest emo',
+    'witch house', 'dark wave', 'coldwave',
+    'neo soul', 'progressive soul', 'uk soul',
+  ];
+
+  const adjacent = new Set();
+  
+  // Find adjacent genres from user's genres
+  for (const genre of userGenres) {
+    const genreLower = genre.toLowerCase();
+    for (const [key, adjacentList] of Object.entries(genreAdjacencies)) {
+      if (genreLower.includes(key)) {
+        adjacentList.forEach(g => adjacent.add(g));
+      }
+    }
+  }
+  
+  // Add some random discovery genres
+  const shuffledDiscovery = [...discoveryGenres].sort(() => rand() - 0.5);
+  shuffledDiscovery.slice(0, 8).forEach(g => adjacent.add(g));
+  
+  return [...adjacent].sort(() => rand() - 0.5);
 }
 
 export function useRecommendations() {
@@ -58,6 +118,7 @@ export function useRecommendations() {
   const rejectedTrackIds = useRef(new Set());
   const likedTrackIds = useRef(new Set());
   const currentFilterRef = useRef({ year: '', month: '' });
+  const seenArtistNames = useRef(new Set()); // Track artist names we've shown
 
   const fetchRecommendations = useCallback(async (token, options = {}) => {
     const { forceRefresh = false, filterYear = '', filterMonth = '' } = options;
@@ -78,7 +139,7 @@ export function useRecommendations() {
       
       if (!userData || forceRefresh) {
         const [topArtists, topTracksMedium, topTracksShort, recentlyPlayed, savedTracks] = await Promise.all([
-          fetch("https://api.spotify.com/v1/me/top/artists?limit=20&time_range=medium_term", { headers })
+          fetch("https://api.spotify.com/v1/me/top/artists?limit=50&time_range=long_term", { headers })
             .then(r => handleApiResponse(r, "top/artists")),
           fetch("https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=medium_term", { headers })
             .then(r => handleApiResponse(r, "top/tracks")),
@@ -95,22 +156,46 @@ export function useRecommendations() {
 
         const knownTrackIds = new Set();
         const knownArtistIds = new Set();
+        const knownArtistNames = new Set();
 
+        // Collect ALL artists the user has interacted with
         (topTracksMedium.items || []).forEach(t => {
           knownTrackIds.add(t.id);
-          t.artists.forEach(a => knownArtistIds.add(a.id));
+          t.artists.forEach(a => {
+            knownArtistIds.add(a.id);
+            knownArtistNames.add(a.name.toLowerCase());
+          });
         });
-        (topTracksShort.items || []).forEach(t => knownTrackIds.add(t.id));
+        (topTracksShort.items || []).forEach(t => {
+          knownTrackIds.add(t.id);
+          t.artists.forEach(a => {
+            knownArtistIds.add(a.id);
+            knownArtistNames.add(a.name.toLowerCase());
+          });
+        });
         (recentlyPlayed.items || []).forEach(item => {
-          if (item.track) knownTrackIds.add(item.track.id);
+          if (item.track) {
+            knownTrackIds.add(item.track.id);
+            item.track.artists?.forEach(a => {
+              knownArtistIds.add(a.id);
+              knownArtistNames.add(a.name.toLowerCase());
+            });
+          }
         });
         (savedTracks.items || []).forEach(item => {
-          if (item.track) knownTrackIds.add(item.track.id);
+          if (item.track) {
+            knownTrackIds.add(item.track.id);
+            item.track.artists?.forEach(a => {
+              knownArtistIds.add(a.id);
+              knownArtistNames.add(a.name.toLowerCase());
+            });
+          }
         });
 
         const allGenres = [];
         (topArtists.items || []).forEach(a => {
           knownArtistIds.add(a.id);
+          knownArtistNames.add(a.name.toLowerCase());
           allGenres.push(...(a.genres || []));
         });
 
@@ -118,129 +203,79 @@ export function useRecommendations() {
           topArtists: topArtists.items || [],
           knownTrackIds,
           knownArtistIds,
+          knownArtistNames,
           allGenres: [...new Set(allGenres)],
         };
         userDataRef.current = userData;
         
-        console.log(`Filtering out ${knownTrackIds.size} known tracks and ${knownArtistIds.size} known artists`);
+        console.log(`Filtering out ${knownTrackIds.size} known tracks, ${knownArtistIds.size} known artists, ${knownArtistNames.size} artist names`);
       }
 
-      const { topArtists, knownTrackIds, knownArtistIds, allGenres } = userData;
+      const { knownTrackIds, knownArtistIds, knownArtistNames, allGenres } = userData;
       const excludeTrackIds = new Set([...knownTrackIds, ...rejectedTrackIds.current]);
       
-      // Use ALL genres and shuffle them
-      const shuffledGenres = [...allGenres]
-        .sort((a, b) => b.length - a.length)
-        .slice(0, 20) // Use more genres
-        .sort(() => rand() - 0.5);
-
-      const artists = [...topArtists].sort(() => rand() - 0.5);
+      // Generate adjacent genres for wider discovery
+      const adjacentGenres = generateAdjacentGenres(allGenres, rand);
+      
+      // Mix user's genres with adjacent genres (prioritize adjacent for discovery)
+      const userGenresShuffled = [...allGenres].sort(() => rand() - 0.5).slice(0, 6);
+      const searchGenres = [
+        ...adjacentGenres.slice(0, 10),  // More adjacent genres
+        ...userGenresShuffled.slice(0, 4), // Fewer user genres
+      ];
+      
       const yearFilter = buildYearFilter(filterYear);
       const hasDateFilter = !!filterYear || !!filterMonth;
       
-      // For older years, relax popularity constraints
+      // Popularity: established indie to major artists (30-90 range)
       const yearNum = filterYear ? parseInt(filterYear) : new Date().getFullYear();
       const isOlderMusic = yearNum < 2010;
-      const minPopularity = isOlderMusic ? 5 : 15;
-      const maxPopularity = isOlderMusic ? 70 : 55;
+      const minPopularity = isOlderMusic ? 20 : 30;
+      const maxPopularity = 90;
 
-      // Search more genres when filtering by date
-      const searchGenres = shuffledGenres.length > 0 
-        ? shuffledGenres.slice(0, hasDateFilter ? 12 : 8)
-        : ["indie pop", "alternative r&b", "art pop", "indie rock", "soul", "funk", "rock", "electronic"];
+      console.log("Searching genres:", searchGenres.slice(0, 8), "...", `(${searchGenres.length} total)`);
+      console.log(`Popularity range: ${minPopularity}-${maxPopularity}`);
 
-      console.log("Searching genres:", searchGenres, "with year filter:", yearFilter);
-
-      // Create multiple search queries per genre with different offsets
-      const searchPromises = [];
-      for (const genre of searchGenres) {
-        // Use multiple offsets to find more variety
-        const offsets = hasDateFilter ? [0, 20, 50] : [Math.floor(rand() * 80)];
-        for (const offset of offsets) {
-          searchPromises.push(
-            (async () => {
-              try {
-                const query = encodeURIComponent(`genre:"${genre}" ${yearFilter}`);
-                const data = await fetch(
-                  `https://api.spotify.com/v1/search?q=${query}&type=track&limit=30&offset=${offset}&market=US`,
-                  { headers }
-                ).then(r => handleApiResponse(r, "search"));
-                
-                const filteredTracks = (data.tracks?.items || []).filter(track => {
-                  const pop = track.popularity;
-                  const isUnknownArtist = !track.artists.some(a => knownArtistIds.has(a.id));
-                  const isLegitimate = pop >= minPopularity && pop <= maxPopularity;
-                  const notExcluded = !excludeTrackIds.has(track.id);
-                  const matchesDate = matchesDateFilter(track, filterYear, filterMonth);
-                  return isUnknownArtist && isLegitimate && notExcluded && matchesDate;
-                });
-                
-                return { genre, tracks: filteredTracks, source: "genre" };
-              } catch {
-                return { genre, tracks: [], source: "genre" };
-              }
-            })()
-          );
+      // Search with fewer API calls to avoid rate limiting
+      // Only use 6 genres with 1 offset each = 6 API calls
+      const searchGenresLimited = searchGenres.slice(0, 6);
+      
+      const searchPromises = searchGenresLimited.map(async (genre) => {
+        try {
+          const offset = Math.floor(rand() * 100);
+          const query = encodeURIComponent(`genre:"${genre}" ${yearFilter}`);
+          const data = await fetch(
+            `https://api.spotify.com/v1/search?q=${query}&type=track&limit=50&offset=${offset}&market=US`,
+            { headers }
+          ).then(r => handleApiResponse(r, "search"));
+          
+          const filteredTracks = (data.tracks?.items || []).filter(track => {
+            const pop = track.popularity;
+            const artistName = track.artists[0]?.name?.toLowerCase() || '';
+            
+            // Check both ID and name to catch known artists
+            const isKnownById = track.artists.some(a => knownArtistIds.has(a.id));
+            const isKnownByName = knownArtistNames.has(artistName);
+            const wasSeenBefore = seenArtistNames.current.has(artistName);
+            
+            const isUnknownArtist = !isKnownById && !isKnownByName && !wasSeenBefore;
+            const isInPopRange = pop >= minPopularity && pop <= maxPopularity;
+            const notExcluded = !excludeTrackIds.has(track.id);
+            const matchesDate = matchesDateFilter(track, filterYear, filterMonth);
+            
+            // Quality check: avoid tracks with very short names (often spam)
+            const hasReasonableName = track.name.length > 2 && artistName.length > 2;
+            
+            return isUnknownArtist && isInPopRange && notExcluded && matchesDate && hasReasonableName;
+          });
+          
+          return { genre, tracks: filteredTracks, source: "genre" };
+        } catch {
+          return { genre, tracks: [], source: "genre" };
         }
-      }
+      });
 
       const genreResults = await Promise.all(searchPromises);
-
-      // For album search, check more artists when filtering
-      const artistCount = hasDateFilter ? 10 : 6;
-      const albumResults = await Promise.all(
-        artists.slice(0, artistCount).map(async artist => {
-          try {
-            const albumData = await fetch(
-              `https://api.spotify.com/v1/artists/${artist.id}/albums?include_groups=album&limit=30`,
-              { headers }
-            ).then(r => handleApiResponse(r, "artist-albums"));
-
-            let albums = (albumData.items || []);
-            if (filterYear) {
-              albums = albums.filter(album => {
-                const releaseYear = album.release_date?.split('-')[0];
-                return releaseYear === filterYear;
-              });
-            }
-            
-            // Pick multiple albums when filtering
-            albums = albums.sort(() => rand() - 0.5);
-            const selectedAlbums = albums.slice(0, hasDateFilter ? 3 : 1);
-            
-            const allDeepCuts = [];
-            for (const album of selectedAlbums) {
-              if (!album) continue;
-              
-              const trackData = await fetch(
-                `https://api.spotify.com/v1/albums/${album.id}/tracks?limit=20`,
-                { headers }
-              ).then(r => handleApiResponse(r, "album-tracks"));
-
-              const trackIds = (trackData.items || []).map(t => t.id).join(',');
-              if (!trackIds) continue;
-              
-              const fullTracks = await fetch(
-                `https://api.spotify.com/v1/tracks?ids=${trackIds}`,
-                { headers }
-              ).then(r => handleApiResponse(r, "tracks-details")).catch(() => ({ tracks: [] }));
-
-              const deepCuts = (fullTracks.tracks || [])
-                .filter(t => {
-                  if (!t || t.popularity >= maxPopularity || excludeTrackIds.has(t.id)) return false;
-                  return matchesDateFilter(t, filterYear, filterMonth);
-                })
-                .map(t => ({ ...t, album }));
-
-              allDeepCuts.push(...deepCuts);
-            }
-
-            return { artist, tracks: allDeepCuts, source: "album" };
-          } catch {
-            return { artist, tracks: [], source: "album" };
-          }
-        })
-      );
 
       // Collect ALL valid tracks
       const allValidTracks = [];
@@ -265,11 +300,14 @@ export function useRecommendations() {
         (genre) => `${genre} gem`,
         (genre) => `Emerging ${genre} artist`,
         (genre) => `${genre} you haven't heard`,
-        (genre) => `New ${genre} release`,
+        (genre) => `Explore ${genre}`,
+        (genre) => `Hidden ${genre} talent`,
       ];
 
       for (const item of genreTracks) {
         const artistId = item.track.artists[0]?.id || "";
+        const artistName = item.track.artists[0]?.name?.toLowerCase() || "";
+        
         if (usedTrackIds.has(item.track.id) || usedArtistIds.has(artistId)) continue;
         
         const reasonIdx = allValidTracks.length % genreReasons.length;
@@ -281,34 +319,9 @@ export function useRecommendations() {
         allValidTracks.push(entry);
         usedTrackIds.add(item.track.id);
         usedArtistIds.add(artistId);
-      }
-
-      // Album tracks
-      const albumTracks = albumResults
-        .flatMap(result =>
-          result.tracks.map(track => ({ track, artist: result.artist }))
-        )
-        .sort(() => rand() - 0.5);
-
-      const albumReasons = [
-        (artist) => `Deep cut from ${artist}`,
-        (artist) => `${artist} album track`,
-        (artist) => `Hidden gem by ${artist}`,
-      ];
-
-      for (const item of albumTracks) {
-        const artistId = item.track.artists?.[0]?.id || item.artist.id;
-        if (usedTrackIds.has(item.track.id) || usedArtistIds.has(artistId)) continue;
         
-        const reasonIdx = allValidTracks.length % albumReasons.length;
-        const entry = createTrackEntry(
-          item.track, 
-          albumReasons[reasonIdx](item.artist.name), 
-          Math.floor(80 + rand() * 15)
-        );
-        allValidTracks.push(entry);
-        usedTrackIds.add(item.track.id);
-        usedArtistIds.add(artistId);
+        // Track this artist name so we don't show them again in future refreshes
+        seenArtistNames.current.add(artistName);
       }
 
       console.log(`Found ${allValidTracks.length} total valid tracks for ${filterYear || 'any year'} ${filterMonth || 'any month'}`);
@@ -354,6 +367,11 @@ export function useRecommendations() {
         const backup = backupTracksRef.current.splice(backupIdx, 1)[0];
         const newTracks = [...prev];
         newTracks[index] = backup;
+        
+        // Track this artist
+        const artistName = backup.artists?.[0]?.name?.toLowerCase();
+        if (artistName) seenArtistNames.current.add(artistName);
+        
         console.log(`Replaced track at index ${index} with backup. ${backupTracksRef.current.length} backups remaining.`);
         return newTracks;
       } else {
